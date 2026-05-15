@@ -3,7 +3,7 @@ const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// CORS manual para todas as respostas
+// CORS manual – funciona até em erros
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -14,22 +14,19 @@ app.use((req, res, next) => {
     next();
 });
 
-// Log simples
 app.use((req, res, next) => {
     console.log(`${req.method} ${req.url}`);
     next();
 });
 
 app.get('/', (req, res) => {
-    res.send('IPTV Proxy está rodando! Use /m3u?url=... para listas e /video?url=... para streams.');
+    res.send('IPTV Proxy está rodando!');
 });
 
-// Headers que imitam navegador
 const browserHeaders = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
     'Accept': '*/*',
     'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.8',
-    'Connection': 'keep-alive',
     'Referer': 'http://pvsrvs.xyz/',
     'Origin': 'http://pvsrvs.xyz',
 };
@@ -49,10 +46,10 @@ function rewriteM3U(originalText, proxyBaseUrl) {
     return newLines.join('\n');
 }
 
-// Função que tenta buscar a lista até 3 vezes com delay
-async function fetchM3U(targetUrl, attempt = 1) {
+// Função de retry
+async function fetchWithRetry(url, attempt = 1) {
     try {
-        const response = await axios.get(targetUrl, {
+        const response = await axios.get(url, {
             responseType: 'text',
             timeout: 20000,
             headers: browserHeaders,
@@ -62,7 +59,7 @@ async function fetchM3U(targetUrl, attempt = 1) {
         if (attempt < 3) {
             console.log(`Tentativa ${attempt} falhou, retentando em 3s...`);
             await new Promise(resolve => setTimeout(resolve, 3000));
-            return fetchM3U(targetUrl, attempt + 1);
+            return fetchWithRetry(url, attempt + 1);
         }
         throw err;
     }
@@ -70,21 +67,18 @@ async function fetchM3U(targetUrl, attempt = 1) {
 
 app.get('/m3u', async (req, res) => {
     const targetUrl = req.query.url;
-    console.log('Requisição /m3u recebida com url:', targetUrl);
     if (!targetUrl) {
         return res.status(400).json({ error: 'Parâmetro "url" é obrigatório' });
     }
+    console.log('Requisição /m3u com url:', targetUrl);
 
     try {
-        const response = await fetchM3U(targetUrl);
-        console.log('Resposta do servidor:', response.status);
-        console.log('Content-Type:', response.headers['content-type']);
-        console.log('Tamanho da resposta:', response.data.length);
+        const response = await fetchWithRetry(targetUrl);
+        console.log('Status:', response.status, 'Content-Type:', response.headers['content-type'], 'Tamanho:', response.data.length);
 
-        // Se for HTML, devolve erro (já tentou 3 vezes antes de chegar aqui)
         if (response.data.trim().startsWith('<')) {
-            console.error('Servidor retornou HTML após todas as tentativas.');
-            return res.status(502).json({ error: 'Servidor da lista retornou HTML repetidamente' });
+            console.error('Servidor retornou HTML.');
+            return res.status(502).json({ error: 'Servidor da lista retornou HTML' });
         }
 
         const proxyBase = `${req.protocol}://${req.get('host')}`;
@@ -102,7 +96,6 @@ app.get('/video', async (req, res) => {
     if (!targetUrl) {
         return res.status(400).json({ error: 'Parâmetro "url" é obrigatório' });
     }
-
     try {
         const response = await axios({
             method: 'get',
@@ -111,24 +104,17 @@ app.get('/video', async (req, res) => {
             timeout: 30000,
             headers: browserHeaders,
         });
-
         if (response.headers['content-type']) {
             res.set('Content-Type', response.headers['content-type']);
         }
-
         response.data.pipe(res);
-
         response.data.on('error', (err) => {
             console.error('Erro no stream:', err.message);
-            if (!res.headersSent) {
-                res.status(500).send('Erro no stream');
-            }
+            if (!res.headersSent) res.status(500).send('Erro no stream');
         });
     } catch (error) {
         console.error('Erro ao reproduzir vídeo:', error.message);
-        if (!res.headersSent) {
-            res.status(500).send('Erro ao acessar o vídeo');
-        }
+        if (!res.headersSent) res.status(500).send('Erro ao acessar o vídeo');
     }
 });
 
