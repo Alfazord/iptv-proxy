@@ -3,7 +3,7 @@ const axios = require('axios');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware manual de CORS (funciona até em erros 502)
+// CORS manual para todas as respostas
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -20,7 +20,6 @@ app.use((req, res, next) => {
     next();
 });
 
-// Rota raiz
 app.get('/', (req, res) => {
     res.send('IPTV Proxy está rodando! Use /m3u?url=... para listas e /video?url=... para streams.');
 });
@@ -50,28 +49,42 @@ function rewriteM3U(originalText, proxyBaseUrl) {
     return newLines.join('\n');
 }
 
+// Função que tenta buscar a lista até 3 vezes com delay
+async function fetchM3U(targetUrl, attempt = 1) {
+    try {
+        const response = await axios.get(targetUrl, {
+            responseType: 'text',
+            timeout: 20000,
+            headers: browserHeaders,
+        });
+        return response;
+    } catch (err) {
+        if (attempt < 3) {
+            console.log(`Tentativa ${attempt} falhou, retentando em 3s...`);
+            await new Promise(resolve => setTimeout(resolve, 3000));
+            return fetchM3U(targetUrl, attempt + 1);
+        }
+        throw err;
+    }
+}
+
 app.get('/m3u', async (req, res) => {
     const targetUrl = req.query.url;
     console.log('Requisição /m3u recebida com url:', targetUrl);
     if (!targetUrl) {
-        return res.status(400).send('Parâmetro "url" é obrigatório');
+        return res.status(400).json({ error: 'Parâmetro "url" é obrigatório' });
     }
 
     try {
-        const response = await axios.get(targetUrl, {
-            responseType: 'text',
-            timeout: 20000, // aumentado para 20s
-            headers: browserHeaders,
-        });
-
+        const response = await fetchM3U(targetUrl);
         console.log('Resposta do servidor:', response.status);
         console.log('Content-Type:', response.headers['content-type']);
         console.log('Tamanho da resposta:', response.data.length);
 
-        // Se for HTML, retornamos erro amigável
+        // Se for HTML, devolve erro (já tentou 3 vezes antes de chegar aqui)
         if (response.data.trim().startsWith('<')) {
-            console.error('Servidor retornou HTML.');
-            return res.status(502).json({ error: 'Servidor da lista retornou HTML' });
+            console.error('Servidor retornou HTML após todas as tentativas.');
+            return res.status(502).json({ error: 'Servidor da lista retornou HTML repetidamente' });
         }
 
         const proxyBase = `${req.protocol}://${req.get('host')}`;
@@ -80,7 +93,6 @@ app.get('/m3u', async (req, res) => {
         res.send(modified);
     } catch (error) {
         console.error('Erro ao buscar lista:', error.message);
-        // Retornamos um JSON com erro para o frontend interpretar
         res.status(502).json({ error: 'Falha ao obter a lista', details: error.message });
     }
 });
@@ -88,7 +100,7 @@ app.get('/m3u', async (req, res) => {
 app.get('/video', async (req, res) => {
     const targetUrl = req.query.url;
     if (!targetUrl) {
-        return res.status(400).send('Parâmetro "url" é obrigatório');
+        return res.status(400).json({ error: 'Parâmetro "url" é obrigatório' });
     }
 
     try {
