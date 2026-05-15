@@ -1,21 +1,31 @@
 const express = require('express');
 const axios = require('axios');
-const cors = require('cors');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors());  // <-- ESSENCIAL para evitar bloqueio CORS
+// Middleware manual de CORS (funciona até em erros 502)
+app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.header('Access-Control-Allow-Headers', '*');
+    if (req.method === 'OPTIONS') {
+        return res.sendStatus(200);
+    }
+    next();
+});
 
+// Log simples
 app.use((req, res, next) => {
     console.log(`${req.method} ${req.url}`);
     next();
 });
 
+// Rota raiz
 app.get('/', (req, res) => {
     res.send('IPTV Proxy está rodando! Use /m3u?url=... para listas e /video?url=... para streams.');
 });
 
-// Headers que imitam um navegador Chrome
+// Headers que imitam navegador
 const browserHeaders = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
     'Accept': '*/*',
@@ -50,7 +60,7 @@ app.get('/m3u', async (req, res) => {
     try {
         const response = await axios.get(targetUrl, {
             responseType: 'text',
-            timeout: 15000,
+            timeout: 20000, // aumentado para 20s
             headers: browserHeaders,
         });
 
@@ -58,10 +68,10 @@ app.get('/m3u', async (req, res) => {
         console.log('Content-Type:', response.headers['content-type']);
         console.log('Tamanho da resposta:', response.data.length);
 
-        // Verifica se é HTML (provável erro do servidor)
+        // Se for HTML, retornamos erro amigável
         if (response.data.trim().startsWith('<')) {
-            console.error('Servidor retornou HTML em vez de M3U.');
-            return res.status(502).send('Erro: o servidor da lista retornou uma página de erro (possível bloqueio).');
+            console.error('Servidor retornou HTML.');
+            return res.status(502).json({ error: 'Servidor da lista retornou HTML' });
         }
 
         const proxyBase = `${req.protocol}://${req.get('host')}`;
@@ -70,7 +80,8 @@ app.get('/m3u', async (req, res) => {
         res.send(modified);
     } catch (error) {
         console.error('Erro ao buscar lista:', error.message);
-        res.status(502).send('Erro ao buscar a lista M3U');
+        // Retornamos um JSON com erro para o frontend interpretar
+        res.status(502).json({ error: 'Falha ao obter a lista', details: error.message });
     }
 });
 
